@@ -1123,6 +1123,7 @@ Continue searching the parent directory? "))
   "Not documented, DIR."
   (let* ((non-essential nil)
          (default-directory dir)
+         (start-time (float-time))
          (cmd-args (helm-ag--construct-do-ag-command helm-pattern)))
     (when cmd-args
       (let ((proc (apply #'start-file-process "helm-do-ag" nil cmd-args)))
@@ -1134,8 +1135,54 @@ Continue searching the parent directory? "))
           (set-process-sentinel
            proc
            (lambda (process event)
-             (helm-process-deferred-sentinel-hook
-              process event (helm-default-directory)))))))))
+           (let* ((err      (process-exit-status process))
+                  (noresult (= err 1)))
+             (unless (and err (> err 0))
+               (helm-process-deferred-sentinel-hook
+                process event (helm-default-directory)))
+             (cond ((and noresult
+                         ;; This is a workaround for zgrep
+                         ;; that exit with code 1
+                         ;; after a certain amount of results.
+                         (with-helm-buffer (helm-empty-buffer-p)))
+                    (with-helm-buffer
+                      (insert (concat "* Exit with code 1, no result found,"
+                                      " command line was:\n\n "
+                                      (propertize (string-join helm-ag--last-command " ")
+                                                  'face 'helm-grep-cmd-line)))
+                      (setq mode-line-format
+                            `(" " mode-line-buffer-identification " "
+                              (:eval (format "L%s" (helm-candidate-number-at-point))) " "
+                              (:eval (propertize
+                                      "[AG process finished - (no results)] "
+                                      'face 'helm-candidate-number))))))
+                   ((or (string= event "finished\n")
+                        (and noresult
+                             ;; This is a workaround for zgrep
+                             ;; that exit with code 1
+                             ;; after a certain amount of results.
+                             (with-helm-buffer (not (helm-empty-buffer-p)))))
+                    (helm-log "AG process finished with %s results in %fs"
+                              (helm-get-candidate-number)
+                              (- (float-time) start-time))
+                    (helm-maybe-show-help-echo)
+                    (with-helm-window
+                      (setq mode-line-format
+                            `(" " mode-line-buffer-identification " "
+                              (:eval (format "L%s" (helm-candidate-number-at-point))) " "
+                              (:eval (propertize
+                                      (format
+                                       "[AG process finished in %.2fs - (%s results)] "
+                                       ,(- (float-time) start-time)
+                                       (helm-get-candidate-number))
+                                      'face 'helm-candidate-number))))
+                      (force-mode-line-update)
+                      (when (and helm-allow-mouse helm-selection-point)
+                        (helm--bind-mouse-for-selection helm-selection-point))))
+                   ;; Catch error output in log.
+                   (t (helm-log
+                       "Error: AG %s"
+                       (replace-regexp-in-string "\n" "" event))))))))))))
 
 (defconst helm-do-ag--help-message
   "\n* Helm Do Ag\n
